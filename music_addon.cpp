@@ -32,6 +32,7 @@ static int g_cur = -1;
 static float g_vol = 0.7f;
 static bool g_paused = false;
 static bool g_shuffle = false;
+static int g_repeat = 0; // 0 = repeat all (queue loops), 1 = repeat one song, 2 = off (stop at end of list)
 static std::mt19937 g_rng{ std::random_device{}() };
 
 // ---------- helpers ----------
@@ -202,7 +203,20 @@ static void on_present(reshade::api::effect_runtime *)
 
     // Auto-advance when a song ends
     if (g_loaded && !g_paused && ma_sound_at_end(&g_sound))
-        next_song();
+    {
+        if (g_repeat == 1)
+        {
+            ma_sound_seek_to_pcm_frame(&g_sound, 0);
+            ma_sound_start(&g_sound);
+        }
+        else if (g_repeat == 2 && !g_shuffle && g_cur == (int)g_songs.size() - 1)
+        {
+            ma_sound_stop(&g_sound);
+            g_paused = true;
+        }
+        else
+            next_song();
+    }
 
     bool focused = game_is_focused();
     bool f5 = key_pressed_once(VK_F5), f6 = key_pressed_once(VK_F6), f7 = key_pressed_once(VK_F7),
@@ -265,6 +279,11 @@ static void draw_ui(reshade::api::effect_runtime *)
     if (ImGui::Button("+10s")) seek_seconds(cur_seconds() + 10.f);
     ImGui::SameLine();
     ImGui::Checkbox("Shuffle", &g_shuffle);
+
+    const char *repeat_label = (g_repeat == 0) ? "Repeat: All songs" : (g_repeat == 1) ? "Repeat: This song" : "Repeat: Off";
+    if (ImGui::Button(repeat_label)) g_repeat = (g_repeat + 1) % 3;
+    ImGui::SameLine();
+    ImGui::TextDisabled("(click to switch: all / one song / off)");
 
     // Volume
     float v = g_vol * 100.f;
