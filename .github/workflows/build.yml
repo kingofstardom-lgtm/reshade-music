@@ -1,0 +1,27 @@
+name: Build addon
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Get ReShade headers and ImGui
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/crosire/reshade.git
+          git -C reshade submodule update --init --depth 1 deps/imgui
+      - name: Get miniaudio
+        shell: bash
+        run: curl -L -o miniaudio.h https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
+      - name: Compile
+        shell: cmd
+        run: cl /nologo /LD /O2 /EHsc /std:c++17 /utf-8 /I reshade\include /I reshade\deps\imgui music_addon.cpp /Fe:music.dll /link user32.lib && ren music.dll music.addon64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: music-addon
+          path: music.addon64
