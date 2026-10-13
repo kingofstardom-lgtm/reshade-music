@@ -18,10 +18,15 @@ jobs:
       - name: Get miniaudio
         shell: bash
         run: curl -L -o miniaudio.h https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
-      - name: Compile
+      - name: Compile music add-on
         shell: cmd
         run: cl /nologo /LD /O2 /EHsc /std:c++17 /utf-8 /I reshade\include /I reshade\deps\imgui music_addon.cpp /Fe:music.dll /link user32.lib && ren music.dll music.addon64
+      - name: Compile notes add-on
+        shell: cmd
+        run: cl /nologo /LD /O2 /EHsc /std:c++17 /utf-8 /I reshade\include /I reshade\deps\imgui notes_addon.cpp /Fe:notes.dll /link user32.lib && ren notes.dll notes.addon64
       - uses: actions/upload-artifact@v4
         with:
-          name: music-addon
-          path: music.addon64
+          name: addons
+          path: |
+            music.addon64
+            notes.addon64
