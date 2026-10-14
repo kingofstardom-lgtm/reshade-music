@@ -41,7 +41,7 @@ static int g_cur = -1;
 static float g_vol = 0.7f;
 static bool g_paused = false;
 static bool g_shuffle = false;
-static int g_repeat = 0; // 0 = repeat all (queue loops), 1 = repeat one song, 2 = off (stop at end)
+static int g_repeat = 0; // 0 = loop list, 1 = loop this song, 2 = play list once then stop, 3 = stop after this song
 static int g_fail_skips = 0;
 static std::mt19937 g_rng{ std::random_device{}() };
 
@@ -349,15 +349,18 @@ static void on_present(reshade::api::effect_runtime *)
         }
         else
         {
-            bool last = false;
-            if (g_repeat == 2 && !g_shuffle)
+            bool stop_now = false;
+            if (g_repeat == 3)
+                stop_now = true; // stop after this song
+            else if (g_repeat == 2 && !g_shuffle)
             {
                 auto q = active_queue();
-                last = !q.empty() && g_cur == q.back();
+                stop_now = !q.empty() && g_cur == q.back(); // end of the list
             }
-            if (last)
+            if (stop_now)
             {
                 ma_sound_stop(&g_sound);
+                ma_sound_seek_to_pcm_frame(&g_sound, 0); // so Play starts it again from the beginning
                 g_paused = true;
             }
             else
@@ -431,10 +434,10 @@ static void draw_player()
     ImGui::SameLine();
     ImGui::Checkbox("Shuffle", &g_shuffle);
 
-    const char *repeat_label = (g_repeat == 0) ? "Repeat: All songs" : (g_repeat == 1) ? "Repeat: This song" : "Repeat: Off";
-    if (ImGui::Button(repeat_label)) g_repeat = (g_repeat + 1) % 3;
+    const char *repeat_labels[4] = { "Loop playlist", "Loop this song", "Play list once, then stop", "Stop after this song" };
+    if (ImGui::Button(repeat_labels[g_repeat])) g_repeat = (g_repeat + 1) % 4;
     ImGui::SameLine();
-    ImGui::TextDisabled("(click to switch: all / one song / off)");
+    ImGui::TextDisabled("(click to change what happens when a song ends)");
 
     // Volume
     float v = g_vol * 100.f;
