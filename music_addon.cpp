@@ -632,8 +632,104 @@ static std::string ly_strip_word_tags(const std::string &s)
     return o;
 }
 
+// ---- SRT subtitle files (00:00:12,500 --> 00:00:15,000) ----
+static bool ly_parse_srt_time(const std::string &str, float &out)
+{
+    int h = 0, m = 0, sec = 0;
+    if (sscanf(str.c_str(), "%d:%d:%d", &h, &m, &sec) != 3) return false;
+    float frac = 0.f;
+    size_t c = str.find_last_of(",.");
+    if (c != std::string::npos)
+    {
+        std::string f = str.substr(c + 1);
+        size_t k = 0;
+        while (k < f.size() && isdigit((unsigned char)f[k])) ++k;
+        f = f.substr(0, k);
+        if (!f.empty()) frac = (float)atof(("0." + f).c_str());
+    }
+    out = (float)(h * 3600 + m * 60 + sec) + frac;
+    return true;
+}
+
+// removes <i>, <b>, {\an8} and similar styling
+static std::string ly_strip_srt_tags(const std::string &str)
+{
+    std::string o;
+    int depth_a = 0, depth_b = 0;
+    for (char ch : str)
+    {
+        if (ch == '<') { ++depth_a; continue; }
+        if (ch == '>' && depth_a > 0) { --depth_a; continue; }
+        if (ch == '{') { ++depth_b; continue; }
+        if (ch == '}' && depth_b > 0) { --depth_b; continue; }
+        if (depth_a == 0 && depth_b == 0) o += ch;
+    }
+    return o;
+}
+
+static void ly_parse_srt(const std::string &text)
+{
+    struct Cue { float s, e; std::string t; };
+    std::vector<Cue> cues;
+    bool in_cue = false;
+    float cs = 0.f, ce = 0.f;
+    std::string ct;
+    auto flush = [&]()
+    {
+        if (in_cue && !ly_trim(ct).empty()) cues.push_back({ cs, ce, ly_trim(ct) });
+        in_cue = false;
+        ct.clear();
+    };
+    size_t start = 0;
+    while (start <= text.size())
+    {
+        size_t e = text.find('\n', start);
+        std::string line = text.substr(start, e == std::string::npos ? std::string::npos : e - start);
+        start = (e == std::string::npos) ? text.size() + 1 : e + 1;
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+
+        size_t arrow = line.find("-->");
+        if (arrow != std::string::npos)
+        {
+            std::string a = ly_trim(line.substr(0, arrow));
+            std::string b = ly_trim(line.substr(arrow + 3));
+            size_t sp = b.find(' ');
+            if (sp != std::string::npos) b = b.substr(0, sp);
+            float t0, t1;
+            if (ly_parse_srt_time(a, t0) && ly_parse_srt_time(b, t1))
+            {
+                flush();
+                in_cue = true;
+                cs = t0; ce = t1;
+                continue;
+            }
+        }
+        if (!in_cue) continue; // cue numbers and stray lines
+        std::string tl = ly_trim(ly_strip_srt_tags(line));
+        if (ly_trim(line).empty()) { flush(); continue; }
+        if (!tl.empty())
+        {
+            if (!ct.empty()) ct += ' ';
+            ct += tl;
+        }
+    }
+    flush();
+
+    std::stable_sort(cues.begin(), cues.end(), [](const Cue &a, const Cue &b) { return a.s < b.s; });
+    g_ly.clear();
+    for (size_t i = 0; i < cues.size(); ++i)
+    {
+        g_ly.push_back({ cues[i].s, cues[i].t });
+        // blank entry at the end of a cue, so the line disappears during silence
+        bool gap = (i + 1 >= cues.size()) || (cues[i + 1].s > cues[i].e + 0.05f);
+        if (gap && cues[i].e > cues[i].s) g_ly.push_back({ cues[i].e, "" });
+    }
+    g_ly_synced = !g_ly.empty();
+}
+
 static void ly_parse(const std::string &text)
 {
+    if (text.find("-->") != std::string::npos) { ly_parse_srt(text); return; }
     g_ly.clear();
     g_ly_synced = false;
     std::vector<LyLine> timed, plain;
@@ -710,7 +806,13 @@ static void lyrics_load_for(const fs::path &song)
             l.replace_extension(L".lrc");
             text = ly_read_text_file(l);
             if (!ly_trim(text).empty()) g_ly_source = ".lrc file";
-            else text.clear();
+            else
+            {
+                l.replace_extension(L".srt");
+                text = ly_read_text_file(l);
+                if (!ly_trim(text).empty()) g_ly_source = ".srt file";
+                else text.clear();
+            }
         }
         if (!text.empty()) ly_parse(text);
     }
@@ -726,7 +828,7 @@ static void lyrics_load_for(const fs::path &song)
 // ---------- LYRICS: style + settings (saved per game in lyrics_settings.txt) ----------
 struct LyStyle
 {
-    float cur[4]  = { 1.00f, 0.85f, 0.25f, 1.00f }; // current line
+    float cur[4]  = { 1.00f, 1.00f, 1.00f, 1.00f }; // current line
     float past[4] = { 1.00f, 1.00f, 1.00f, 0.35f }; // lines already sung
     float next[4] = { 1.00f, 1.00f, 1.00f, 0.70f }; // lines coming up
     float outc[4] = { 0.00f, 0.00f, 0.00f, 0.90f }; // outline colour
@@ -870,6 +972,7 @@ static void ly_apply_preset(int n)
     else if (n == 1) // Karaoke: gold current line, several lines
     {
         s.lines = 5; s.outline = 2.0f; s.shadow = 2.0f; s.use_bg = false; s.pop = true;
+        s.cur[0] = 1.00f; s.cur[1] = 0.85f; s.cur[2] = 0.25f; s.cur[3] = 1.0f;
     }
     else if (n == 2) // Cinematic: dark rounded box
     {
@@ -1130,87 +1233,68 @@ static void on_overlay(reshade::api::effect_runtime *)
     ImGui::PopStyleVar(3);
 }
 
-// ---------- LYRICS: menu tab ----------
+// ---------- LYRICS: menu tab (kept simple; extra options are folded away) ----------
 static void draw_lyrics_tab()
 {
     ly_ensure_loaded();
     LyStyle &S = g_ly_style;
     bool ch = false;
+    const int cflags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
 
-    ch |= ImGui::Checkbox("Show lyrics on screen (F10)", &g_ly_enabled);
+    ch |= ImGui::Checkbox("Show lyrics (F10)", &g_ly_enabled);
     ImGui::SameLine();
-    ImGui::Checkbox("Edit layout (move / resize the box)", &g_ly_edit);
+    ImGui::Checkbox("Move / resize", &g_ly_edit);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reload") && g_cur >= 0 && g_cur < (int)g_songs.size())
+        lyrics_load_for(g_songs[g_cur]);
 
     if (g_ly.empty())
-        ImGui::TextDisabled("No lyrics for this song. Add them to the file's lyrics tag, or put a same-name .lrc file next to it.");
+        ImGui::TextDisabled("No lyrics for this song (tag, or .lrc / .srt with the same name).");
     else
-        ImGui::Text("Lyrics: %s, %d lines (from %s)", g_ly_synced ? "synced" : "not synced", (int)g_ly.size(), g_ly_source.c_str());
+        ImGui::TextDisabled("%s lyrics from %s", g_ly_synced ? "Synced" : "Plain", g_ly_source.c_str());
 
-    ImGui::TextDisabled("Overlay layer: drawn %llu times, %llu of them with this menu closed.",
-                        g_overlay_calls, g_overlay_calls_closed);
-    if (g_overlay_calls_closed == 0)
-        ImGui::TextDisabled("If this stays 0 after closing the menu, tick 'Show FPS' (or clock) in ReShade's Settings so it keeps drawing.");
-
-    if (ImGui::Button("Reload lyrics") && g_cur >= 0 && g_cur < (int)g_songs.size())
-        lyrics_load_for(g_songs[g_cur]);
+    ImGui::Separator();
+    if (ImGui::Button("Karaoke")) ly_apply_preset(1);
     ImGui::SameLine();
-    if (ImGui::Button("Reset position"))
+    if (ImGui::Button("Cinematic")) ly_apply_preset(2);
+
+    ImGui::TextUnformatted("Lines shown");
+    if (ImGui::RadioButton("Current only", S.lines <= 1)) { S.lines = 1; ch = true; }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Previous / current / next", S.lines == 3 || S.lines == 2 || S.lines == 4)) { S.lines = 3; ch = true; }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("5 lines", S.lines >= 5)) { S.lines = 5; ch = true; }
+
+    ch |= ImGui::ColorEdit4("Current line colour", S.cur, cflags);
+    float other[4] = { S.next[0], S.next[1], S.next[2], S.next[3] };
+    if (ImGui::ColorEdit4("Other lines colour", other, cflags))
     {
-        g_ly_rect[0] = 0.25f; g_ly_rect[1] = 0.76f; g_ly_rect[2] = 0.50f; g_ly_rect[3] = 0.17f;
-        g_ly_reset = true;
+        for (int k = 0; k < 3; ++k) { S.next[k] = other[k]; S.past[k] = other[k]; }
+        S.past[3] = S.next[3] * 0.5f;
         ch = true;
     }
+    ch |= ImGui::Checkbox("Dark background", &S.use_bg);
 
-    ImGui::Separator();
-    ImGui::TextUnformatted("Presets");
-    const char *preset_names[4] = { "Minimal", "Karaoke", "Cinematic", "Neon" };
-    for (int i = 0; i < 4; ++i)
+    if (ImGui::CollapsingHeader("More options"))
     {
-        if (i) ImGui::SameLine();
-        if (ImGui::Button(preset_names[i])) ly_apply_preset(i);
+        const char *aligns[3] = { "Left", "Center", "Right" };
+        ch |= ImGui::Combo("Alignment", &S.align, aligns, 3);
+        ch |= ImGui::SliderFloat("Outline", &S.outline, 0.0f, 4.0f, "%.1f px");
+        ch |= ImGui::SliderFloat("Shadow", &S.shadow, 0.0f, 6.0f, "%.1f px");
+        ch |= ImGui::SliderFloat("Opacity", &S.opacity, 0.1f, 1.0f, "%.2f");
+        ch |= ImGui::SliderInt("Sync offset (ms)", &g_ly_offset_ms, -3000, 3000);
+        ch |= ImGui::Checkbox("Show song name at the start", &S.show_title);
+        ch |= ImGui::Checkbox("Plain lyrics scroll with the song", &g_ly_plain_scroll);
+        if (ImGui::SmallButton("Reset position"))
+        {
+            g_ly_rect[0] = 0.25f; g_ly_rect[1] = 0.76f; g_ly_rect[2] = 0.50f; g_ly_rect[3] = 0.17f;
+            g_ly_reset = true;
+            ch = true;
+        }
+        ImGui::TextDisabled("Overlay drawn %llu times (%llu with the menu closed).", g_overlay_calls, g_overlay_calls_closed);
+        if (g_overlay_calls_closed == 0)
+            ImGui::TextDisabled("Stays 0 with the menu closed? Tick 'Show FPS' in ReShade's Settings.");
     }
-    ImGui::TextUnformatted("My slots");
-    for (int i = 0; i < 3; ++i)
-    {
-        ImGui::PushID(100 + i);
-        if (ImGui::SmallButton("Save")) { g_ly_slots[i] = ly_style_to_str(S); ly_mark_dirty(); }
-        ImGui::SameLine();
-        bool has = !g_ly_slots[i].empty();
-        if (ImGui::SmallButton("Load") && has) { ly_style_from_str(g_ly_slots[i], S); ly_mark_dirty(); }
-        ImGui::SameLine();
-        ImGui::Text("Slot %d%s", i + 1, has ? "" : " (empty)");
-        ImGui::PopID();
-    }
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("Colours");
-    ch |= ImGui::ColorEdit4("Current line", S.cur);
-    ch |= ImGui::ColorEdit4("Upcoming lines", S.next);
-    ch |= ImGui::ColorEdit4("Past lines", S.past);
-    ch |= ImGui::ColorEdit4("Outline", S.outc);
-    ch |= ImGui::ColorEdit4("Background box", S.bgc);
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("Text");
-    const char *aligns[3] = { "Left", "Center", "Right" };
-    ch |= ImGui::Combo("Alignment", &S.align, aligns, 3);
-    ch |= ImGui::SliderInt("Visible lines", &S.lines, 1, 9);
-    ch |= ImGui::Checkbox("Text size follows the box (resize box = resize text)", &S.fit_box);
-    if (!S.fit_box) ch |= ImGui::SliderFloat("Text size", &S.scale, 0.4f, 4.0f, "%.2f");
-    ch |= ImGui::Checkbox("Shrink long lines to fit the box width", &S.fit_width);
-    ch |= ImGui::Checkbox("Current line slightly bigger", &S.pop);
-    ch |= ImGui::SliderFloat("Outline", &S.outline, 0.0f, 4.0f, "%.1f px");
-    ch |= ImGui::SliderFloat("Shadow", &S.shadow, 0.0f, 6.0f, "%.1f px");
-    ch |= ImGui::SliderFloat("Opacity", &S.opacity, 0.1f, 1.0f, "%.2f");
-    ch |= ImGui::SliderFloat("Scroll speed", &S.anim, 3.0f, 30.0f, "%.0f");
-
-    ImGui::Separator();
-    ch |= ImGui::Checkbox("Background box", &S.use_bg);
-    if (S.use_bg) ch |= ImGui::SliderFloat("Corner rounding", &S.rounding, 0.0f, 40.0f, "%.0f");
-    ch |= ImGui::Checkbox("Show song name for the first seconds", &S.show_title);
-    ch |= ImGui::Checkbox("Plain lyrics (no timestamps) scroll with song progress", &g_ly_plain_scroll);
-    ch |= ImGui::SliderInt("Sync offset (ms)", &g_ly_offset_ms, -3000, 3000);
-    ImGui::TextDisabled("Sync offset: + shows lyrics later, - shows them earlier.");
 
     if (ch) ly_mark_dirty();
 }
