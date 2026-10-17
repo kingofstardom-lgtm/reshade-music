@@ -937,6 +937,14 @@ static void ly_text(ImDrawList *dl, ImFont *font, float sz, ImVec2 p, const floa
     dl->AddText(font, sz, p, ly_col(col, amul), s);
 }
 
+// Width of a text at a given pixel size (ReShade only exposes ImGui::CalcTextSize, not ImFont methods)
+static float ly_text_width(const char *s, float sz)
+{
+    float base = ImGui::GetFontSize();
+    if (base < 1.f) base = 13.f;
+    return ImGui::CalcTextSize(s).x * (sz / base);
+}
+
 static void ly_dashed_rect(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 c)
 {
     auto seg = [&](ImVec2 p, ImVec2 q)
@@ -1037,7 +1045,7 @@ static void ly_draw_contents(bool editing, float t, float title_a)
             for (int k = 0; k < 4; ++k) col[k] = from[k] + (S.cur[k] - from[k]) * w;
             float a = std::clamp((half - ad) / 0.6f, 0.f, 1.f);
             float lsz = base * (S.pop ? 1.f + 0.08f * w : 1.f);
-            float tw = font->CalcTextSizeA(lsz, FLT_MAX, 0.f, tx.c_str()).x;
+            float tw = ly_text_width(tx.c_str(), lsz);
             float avail = sz.x - 20.f;
             if (S.fit_width && tw > avail && avail > 10.f)
             {
@@ -1056,7 +1064,7 @@ static void ly_draw_contents(bool editing, float t, float title_a)
     {
         const std::string &title = g_names[g_cur];
         float tsz = std::max(11.f, base * 0.45f);
-        float tw = font->CalcTextSizeA(tsz, FLT_MAX, 0.f, title.c_str()).x;
+        float tw = ly_text_width(title.c_str(), tsz);
         float avail = sz.x - 20.f;
         if (tw > avail && avail > 10.f) { tsz *= avail / tw; tw = avail; }
         float x = (S.align == 0) ? p0.x + 10.f : (S.align == 2) ? p1.x - 10.f - tw : p0.x + (sz.x - tw) * 0.5f;
